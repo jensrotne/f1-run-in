@@ -8,11 +8,16 @@ export function rows(html) {
   return [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map(r => [...r[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map(c => c[1]));
 }
 export function parseDrivers(html) {
+  const officialImage = cell => {
+    const src = cell?.match(/<img\b[^>]*\bsrc="([^"]+)"/)?.[1]?.replace(/&amp;/g, '&');
+    if (!src) return undefined;
+    try { const url = new URL(src); return url.protocol === 'https:' && url.hostname === 'media.formula1.com' ? url.href : undefined; } catch { return undefined; }
+  };
   const drivers = rows(html).map(c => {
     const href = c[1]?.match(/href="([^"]*\/drivers\/([A-Z0-9]+)\/[^"\s]+)"/);
     const spans = [...(c[1] || '').matchAll(/<span class="max-(?:lg|md):hidden">([^<]*)<\/span>/g)].map(m => plain(m[1]));
     const code = c[1]?.match(/<span class="md:hidden">([^<]+)<\/span>/)?.[1];
-    return { id: href?.[2], name: spans.join(' '), code, position: Number(plain(c[0])), team: plain(c[3]), points: Number(plain(c[4])), color: c[1]?.match(/background-color:(#[a-fA-F0-9]{6})/)?.[1] || '#a9abb5', url: ROOT + href?.[1], finishes: Array(30).fill(0) };
+    return { id: href?.[2], name: spans.join(' '), code, position: Number(plain(c[0])), team: plain(c[3]), points: Number(plain(c[4])), color: c[1]?.match(/background-color:(#[a-fA-F0-9]{6})/)?.[1] || '#a9abb5', portraitUrl: officialImage(c[1]), teamLogoUrl: officialImage(c[3]), url: ROOT + href?.[1], finishes: Array(30).fill(0) };
   });
   if (drivers.length < 10 || drivers.some(d => !d.id || !d.name || !Number.isFinite(d.points)) || drivers[0].position !== 1) throw new Error('Official standings format could not be verified.');
   return drivers;
