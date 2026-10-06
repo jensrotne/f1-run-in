@@ -35,6 +35,16 @@ export function parseRaceResults(html, drivers) {
   if (results.length < 10 || results.some(r => !r.name || !r.position || !Number.isFinite(r.points))) throw new Error('Official race classification could not be verified.');
   return results;
 }
+export function parseConstructors(html) {
+  const constructors=rows(html).map(c=>{
+    const href=c[1]?.match(/href="([^"\s]*\/team\/([^"\s]+))"/);
+    const name=plain(c[1]);
+    return {id:href?.[2],name,team:name,code:name.replace(/[^A-Za-z]/g,'').slice(0,3).toUpperCase(),position:Number(plain(c[0])),points:Number(plain(c[2])),
+      color:c[1]?.match(/background-color:(#[a-fA-F0-9]{6})/)?.[1]||'#a9abb5',teamLogoUrl:c[1]?.match(/<img\b[^>]*src="(https:\/\/media\.formula1\.com\/[^"\s]+)"/)?.[1],url:ROOT+href?.[1],finishes:Array(30).fill(0)};
+  });
+  if(constructors.length<5||constructors.some(c=>!c.id||!c.name||!Number.isFinite(c.points)))throw new Error('Official constructor standings could not be verified.');
+  return constructors;
+}
 export function parseCalendar(html, year) {
   const found = new Map();
   for (const m of html.matchAll(/<a\b[^>]*href="([^"\s]+)"[^>]*>([\s\S]*?)<\/a>/g)) {
@@ -68,8 +78,9 @@ async function mapLimit(items, fn, limit = 5) {
   return result;
 }
 export async function fetchSeason(year) {
-  const [dh, ch, rh] = await Promise.all([get(`/en/results/${year}/drivers`), get(`/en/racing/${year}`), get(`/en/results/${year}/races`)]);
+  const [dh, ch, rh, th] = await Promise.all([get(`/en/results/${year}/drivers`), get(`/en/racing/${year}`), get(`/en/results/${year}/races`),get(`/en/results/${year}/team`)]);
   const drivers = parseDrivers(dh);
+  const constructors = parseConstructors(th);
   const completedMetadata = rows(rh).map(c => ({path:c[0].match(/href="([^"]+\/race-result)"/)?.[1],name:plain(c[0]),date:plain(c[1])})).filter(r => r.path);
   const completed = completedMetadata.map(r => r.path);
   const completedSlugs = new Set(completed.map(p => p.split('/').at(-2).replace(/[^a-z]/g,'')));
@@ -98,6 +109,8 @@ export async function fetchSeason(year) {
     for (const row of classification) {
       const d = drivers.find(d => d.id === row.driverId); const pos = Number(row.position);
       if (d && pos > 0 && pos <= 30) d.finishes[pos-1]++;
+      const constructor=constructors.find(c=>c.name===row.team);
+      if(constructor&&pos>0&&pos<=30)constructor.finishes[pos-1]++;
     }
     const normalize = s => s.toLowerCase().replace(/[^a-z]/g,'');
     const race = calendar.find(r => normalize(r.name) === normalize(metadata.name) || normalize(r.slug) === normalize(metadata.path.split('/').at(-2)));
@@ -106,7 +119,8 @@ export async function fetchSeason(year) {
   });
   const expected = completed.length;
   const countbackAvailable = drivers.reduce((n,d) => n+d.finishes[0],0) === expected;
+  const constructorCountbackAvailable=constructors.reduce((n,c)=>n+c.finishes[0],0)===expected;
   const sessions = calendar.flatMap(r => r.sessions.filter(s => !s.completed).map(s => ({ ...s, round:r.round, name:r.name, slug:r.slug, url:r.url, maxPoints:s.type==='race'?25:8 }))).sort((a,b)=>Date.parse(a.start)-Date.parse(b.start));
-  return { year, fetchedAt: new Date().toISOString(), source: 'official', drivers, calendar, sessions, raceResults, sprintResults, completedRaces: expected, countbackAvailable,
-    sources: { standings: `${ROOT}/en/results/${year}/drivers`, calendar: `${ROOT}/en/racing/${year}`, rules: RULES_URL } };
+  return { year, fetchedAt: new Date().toISOString(), source: 'official', drivers, constructors, calendar, sessions, raceResults, sprintResults, completedRaces: expected, countbackAvailable, constructorCountbackAvailable,
+    sources: { standings: `${ROOT}/en/results/${year}/drivers`, constructors:`${ROOT}/en/results/${year}/team`, calendar: `${ROOT}/en/racing/${year}`, rules: RULES_URL } };
 }

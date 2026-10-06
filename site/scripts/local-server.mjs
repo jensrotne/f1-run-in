@@ -7,11 +7,12 @@ const root=new URL('../',import.meta.url).pathname;
 const localDir=new URL('../.local/',import.meta.url);
 let cached, pending;
 try {cached=JSON.parse(await readFile(new URL('season.json',localDir),'utf8'));} catch {cached=JSON.parse(await readFile(new URL('../lib/snapshot.json',import.meta.url),'utf8'));}
+if(!Array.isArray(cached?.constructors))cached=JSON.parse(await readFile(new URL('../lib/snapshot.json',import.meta.url),'utf8'));
 const server=createHttpServer();
 const vite=await createViteServer({root,configFile:new URL('../vite.config.ts',import.meta.url).pathname,server:{middlewareMode:true,host,hmr:{host,server}},appType:'spa'});
 async function loadSeason() {
   const year=new Date().getUTCFullYear();
-  if(cached?.year===year&&Array.isArray(cached.raceResults)&&Array.isArray(cached.sprintResults)&&Date.now()-Date.parse(cached.fetchedAt)<5*60*1000) return cached;
+  if(cached?.year===year&&Array.isArray(cached.constructors)&&Array.isArray(cached.raceResults)&&Array.isArray(cached.sprintResults)&&Date.now()-Date.parse(cached.fetchedAt)<5*60*1000) return cached;
   try {
     pending??=fetchSeason(year).then(async data=>{
       cached=data;
