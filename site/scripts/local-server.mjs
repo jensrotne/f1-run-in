@@ -11,7 +11,7 @@ const server=createHttpServer();
 const vite=await createViteServer({root,configFile:new URL('../vite.config.ts',import.meta.url).pathname,server:{middlewareMode:true,host,hmr:{host,server}},appType:'spa'});
 async function loadSeason() {
   const year=new Date().getUTCFullYear();
-  if(cached?.year===year&&Date.now()-Date.parse(cached.fetchedAt)<5*60*1000) return cached;
+  if(cached?.year===year&&Array.isArray(cached.raceResults)&&Array.isArray(cached.sprintResults)&&Date.now()-Date.parse(cached.fetchedAt)<5*60*1000) return cached;
   try {
     pending??=fetchSeason(year).then(async data=>{
       cached=data;

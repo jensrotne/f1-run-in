@@ -22,6 +22,19 @@ export function parseDrivers(html) {
   if (drivers.length < 10 || drivers.some(d => !d.id || !d.name || !Number.isFinite(d.points)) || drivers[0].position !== 1) throw new Error('Official standings format could not be verified.');
   return drivers;
 }
+export function parseRaceResults(html, drivers) {
+  const results = rows(html).map(c => {
+    const driverId = c[2]?.match(/\/([a-z]{6}\d{2})\//)?.[1]?.toUpperCase();
+    const driver = drivers.find(d => d.id === driverId);
+    const name = [...(c[2] || '').matchAll(/<span class="max-(?:lg|md):hidden">([^<]*)<\/span>/g)].map(m => plain(m[1])).join(' ');
+    const image = cell => cell?.match(/<img\b[^>]*\bsrc="(https:\/\/media\.formula1\.com\/[^"\s]+)"/)?.[1]?.replace(/&amp;/g,'&');
+    return {driverId:driverId || name, name:name || driver?.name, code:driver?.code || c[2]?.match(/<span class="md:hidden">([^<]+)<\/span>/)?.[1],
+      position:plain(c[0]), number:plain(c[1]), team:plain(c[3]), laps:plain(c[4]), time:plain(c[5]), points:Number(plain(c[6])),
+      color:c[2]?.match(/background-color:(#[a-fA-F0-9]{6})/)?.[1] || driver?.color || '#a9abb5', portraitUrl:image(c[2]) || driver?.portraitUrl, teamLogoUrl:image(c[3]) || driver?.teamLogoUrl};
+  });
+  if (results.length < 10 || results.some(r => !r.name || !r.position || !Number.isFinite(r.points))) throw new Error('Official race classification could not be verified.');
+  return results;
+}
 export function parseCalendar(html, year) {
   const found = new Map();
   for (const m of html.matchAll(/<a\b[^>]*href="([^"\s]+)"[^>]*>([\s\S]*?)<\/a>/g)) {
@@ -57,8 +70,10 @@ async function mapLimit(items, fn, limit = 5) {
 export async function fetchSeason(year) {
   const [dh, ch, rh] = await Promise.all([get(`/en/results/${year}/drivers`), get(`/en/racing/${year}`), get(`/en/results/${year}/races`)]);
   const drivers = parseDrivers(dh);
-  const completed = rows(rh).map(c => c[0].match(/href="([^"]+\/race-result)"/)?.[1]).filter(Boolean);
+  const completedMetadata = rows(rh).map(c => ({path:c[0].match(/href="([^"]+\/race-result)"/)?.[1],name:plain(c[0]),date:plain(c[1])})).filter(r => r.path);
+  const completed = completedMetadata.map(r => r.path);
   const completedSlugs = new Set(completed.map(p => p.split('/').at(-2).replace(/[^a-z]/g,'')));
+  const sprintResultPaths = new Map();
   const calendar = await mapLimit(parseCalendar(ch,year), async race => {
     const html = await get(race.url);
     const sessions = parseSessions(html);
@@ -66,20 +81,32 @@ export async function fetchSeason(year) {
     const sessionState = [...html.matchAll(/self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)/g)].map(m => JSON.parse(m[1])).join('');
     const raceDone = completedSlugs.has(race.slug.replace(/[^a-z]/g,'')) || /"session":"r"[\s\S]{0,400}?"state":"(?:completed|finished)"/.test(sessionState);
     const sprintDone = /"session":"s"[\s\S]{0,400}?"state":"(?:completed|finished)"/.test(sessionState);
-    return { ...race, date: sessions.find(s => s.type === 'race').start, sprint: sessions.some(s => s.type === 'sprint'), completed: raceDone,
+    const sprintPath = [...html.matchAll(/href="([^"\s]+\/sprint-results)"/g)].map(m=>m[1]).find(p=>p.startsWith(`/en/results/${year}/races/`));
+    if (sprintPath) sprintResultPaths.set(race.slug,sprintPath);
+    const circuitImageUrl = [...html.matchAll(/(?:src|href)="(https:\/\/media\.formula1\.com\/[^"\s]*\/track\/[^"\s]+)"/g)].map(m=>m[1]).find(src=>src.includes('detailed'));
+    return { ...race, circuitImageUrl, date: sessions.find(s => s.type === 'race').start, sprint: sessions.some(s => s.type === 'sprint'), completed: raceDone,
       sessions: sessions.map(s => ({ ...s, completed: s.type === 'race' ? raceDone : sprintDone })) };
   });
-  await mapLimit(completed, async path => {
-    const html = await get(path);
-    for (const c of rows(html)) {
-      const id = c[2]?.match(/\/([a-z]{6}\d{2})\//)?.[1]?.toUpperCase();
-      const d = drivers.find(d => d.id === id); const pos = Number(plain(c[0]));
+  const sprintResults = await mapLimit(calendar.filter(r=>r.sessions.some(s=>s.type==='sprint'&&s.completed)),async race=>{
+    const path = sprintResultPaths.get(race.slug);
+    if (!path) throw new Error(`Official sprint result link missing: ${race.name}`);
+    const classification = parseRaceResults(await get(path),drivers);
+    return {slug:race.slug,name:race.name,round:race.round,date:race.sessions.find(s=>s.type==='sprint').start,url:ROOT+path,classification};
+  });
+  const raceResults = await mapLimit(completedMetadata, async (metadata) => {
+    const classification = parseRaceResults(await get(metadata.path), drivers);
+    for (const row of classification) {
+      const d = drivers.find(d => d.id === row.driverId); const pos = Number(row.position);
       if (d && pos > 0 && pos <= 30) d.finishes[pos-1]++;
     }
+    const normalize = s => s.toLowerCase().replace(/[^a-z]/g,'');
+    const race = calendar.find(r => normalize(r.name) === normalize(metadata.name) || normalize(r.slug) === normalize(metadata.path.split('/').at(-2)));
+    if (!race) throw new Error(`Official race result could not be matched to the calendar: ${metadata.name}`);
+    return {slug:race.slug,name:metadata.name,round:race.round,date:race.date,url:ROOT+metadata.path,classification};
   });
   const expected = completed.length;
   const countbackAvailable = drivers.reduce((n,d) => n+d.finishes[0],0) === expected;
   const sessions = calendar.flatMap(r => r.sessions.filter(s => !s.completed).map(s => ({ ...s, round:r.round, name:r.name, slug:r.slug, url:r.url, maxPoints:s.type==='race'?25:8 }))).sort((a,b)=>Date.parse(a.start)-Date.parse(b.start));
-  return { year, fetchedAt: new Date().toISOString(), source: 'official', drivers, calendar, sessions, completedRaces: expected, countbackAvailable,
+  return { year, fetchedAt: new Date().toISOString(), source: 'official', drivers, calendar, sessions, raceResults, sprintResults, completedRaces: expected, countbackAvailable,
     sources: { standings: `${ROOT}/en/results/${year}/drivers`, calendar: `${ROOT}/en/racing/${year}`, rules: RULES_URL } };
 }

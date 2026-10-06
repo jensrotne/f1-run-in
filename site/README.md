@@ -19,6 +19,10 @@ The Node server fetches official Formula1.com standings, calendar, race session 
 
 Official HTML is not a guaranteed API: if the site's markup changes, parsing may fail and the app uses its last verified same-season snapshot. It never silently substitutes another year's standings. The current year is selected by the local server.
 
+## Season results
+
+The season results section shows Grand Prix and sprint winners, plus official circuit artwork on each GP card. Select a weekend and switch between Grand Prix and Sprint to view its full classification, including laps, time or retirement status, and awarded points. Upcoming sessions show no results yet. Only Grand Prix classifications are used for championship countback; sprint results contribute points but never race wins.
+
 ## Championship calculations
 
 - Remaining capacity = 25 per unclassified Grand Prix + 8 per unclassified Sprint.
