@@ -1,0 +1,10 @@
+{
+  "name": "f1-breakeven",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix site install",
+    "dev": "npm --prefix site run dev",
+    "test": "npm --prefix site test",
+    "check": "npm --prefix site run check"
+  }
+}
