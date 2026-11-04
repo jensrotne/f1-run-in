@@ -3,3 +3,5 @@ site/node_modules/
 site/.local/
 *.tsbuildinfo
 .DS_Store
+.env
+backend/.local/

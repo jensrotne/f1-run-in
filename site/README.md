@@ -4,20 +4,17 @@ A local F1 driver and constructor standings dashboard and championship clinch ca
 
 ## Run
 
-Requires Node.js 24 (or newer).
-
-```sh
-npm install
-npm run dev
-```
-
-Open http://127.0.0.1:5173. Press Ctrl+C to stop.
+Requires Node.js 24+, Go 1.26+, and PostgreSQL 17. Follow the [root startup instructions](../README.md) to start PostgreSQL and the Go API, then run `npm install` and `npm run dev` here. Open http://127.0.0.1:5173. Press Ctrl+C in each server terminal to stop; SIGTERM also shuts down cleanly. Database data survives normal shutdown.
 
 ## Data
 
-The Node server fetches official Formula1.com driver and constructor standings, calendar, race session timestamps, and completed race classifications. No API key is required. Data refreshes while the page is open, with a five-minute cache. The Refresh button checks the endpoint, which may reuse data younger than five minutes. The last successful response is saved locally in `.local/season.json`; a checked-in verified 2026 snapshot is the initial fallback. Fallback data is explicitly labeled and never represented as a successful live refresh. There is no third-party results service or browser CORS proxy.
+The Go API on `127.0.0.1:5174` owns `GET /api/season`, refresh coordination, and PostgreSQL persistence. Node/Vite proxies the route without changing JSON or cached provenance. Backend unavailability returns an explicit 503 error. The API runs the existing official Formula1.com parser in a bounded Node subprocess (90 seconds, 16 MiB JSON output). No API key is required.
 
-Official HTML is not a guaranteed API: if the site's markup changes, parsing may fail and the app uses its last verified same-season snapshot. It never silently substitutes another year's standings. The current year is selected by the local server.
+Complete season documents include drivers, constructors, calendar, GP/sprint classifications, countback flags and sources. A refresh is validated and committed as one PostgreSQL JSONB upsert before it can be served as live. Concurrent requests share one refresh. Fresh official snapshots are reused for five minutes, including after backend restart; the Refresh button may reuse fresh data. Migrations run transactionally at startup, serialize concurrent application and record versions. `cd backend && go run . migrate` from the repository root also applies them explicitly and safely more than once.
+
+If official ingestion or persistence fails, the API serves only its last committed same-season snapshot with `source: cached`, a warning and the original `fetchedAt`. Without a same-year snapshot it returns 503. A verified checked-in snapshot can bootstrap an empty database only for its own year and is labeled cached. Official markup can change and cause parsing failure. The current UTC year is selected by Go. Existing `site/.local/season.json` files are no longer read or written. PostgreSQL is the only runtime persistence store.
+
+Both HTTP servers reject unexpected Host/Origin headers. Remote database targets are rejected. Keep credentials in your shell or untracked root `.env`; use the loopback PostgreSQL publication described in the root README. No third-party results service, browser CORS proxy, or deployment workflow is used.
 
 ## Season results
 
@@ -43,6 +40,28 @@ The app evaluates sprint and Grand Prix sessions independently, including possib
 ```sh
 npm test
 npm run check
+cd ../backend
+go test -race ./...
+go vet ./...
 ```
 
 Tests cover sprint clinches, countback, all-rival checks, eliminated drivers, custom scenarios, invalid inputs, and the verified season snapshot. The page also exposes the same scenario control through WebMCP when supported by the browser.
+
+Backend integration tests require an isolated local database (they replace the current-year fixture and briefly install a write-rejection trigger):
+
+```sh
+cd backend # from repository root
+TEST_DATABASE_URL="$DATABASE_URL" go test -race -run TestPostgresIntegration -v
+```
+
+Without `TEST_DATABASE_URL`, this database test is explicitly skipped. The suite verifies migration replay, persisted data across new connections, same-year fallback and atomic write-failure behavior. Unit tests cover refresh coordination, malformed/wrong-year ingestion, write failures, Host/Origin/method guards and subprocess cancellation/output bounds. Node proxy tests require free loopback port 5174; stop the API before `npm test`.
+
+For deterministic end-to-end QA, `F1_INGEST_SCRIPT=/absolute/path/to/fixture.mjs go run .` selects an ingestion adapter script that receives the year as its first argument and writes a valid Season JSON document to stdout. This is an operator-only test hook; the normal adapter calls official `fetchSeason`. To force a stale refresh, use a fixture with an old `fetchedAt` and then change the adapter to fail; cached responses must retain that timestamp and warning. Never point integration tests at a database whose data you need to keep.
+
+Run the complete deterministic stack check after the database test above has left a stale current-year fixture. Stop any existing frontend/backend first:
+
+```sh
+TEST_DATABASE_URL="$DATABASE_URL" node site/scripts/verify-stack.mjs # repository root
+```
+
+This builds the Go API, starts both listeners, verifies database-backed responses, stale upstream-failure fallback and fresh restart reuse, then stops both processes with SIGTERM. It uses temporary fixture scripts and removes them afterward. Ports 5173 and 5174 must be free. The separate Go integration test verifies migration replay and real write rejection.
