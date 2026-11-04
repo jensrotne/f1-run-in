@@ -24,6 +24,12 @@ func validate(raw []byte, year int) error {
 			return fmt.Errorf("missing %s", key)
 		}
 	}
+	if value, exists := d["warning"]; exists {
+		var text string
+		if bytes.Equal(value, []byte("null")) || json.Unmarshal(value, &text) != nil {
+			return errors.New("invalid warning")
+		}
+	}
 	var y int
 	var at, source string
 	if json.Unmarshal(d["year"], &y) != nil || y != year || year < 1950 || year > 9999 {
@@ -48,44 +54,8 @@ func validate(raw []byte, year int) error {
 			return fmt.Errorf("empty %s", key)
 		}
 	}
-	for _, key := range []string{"drivers", "constructors", "calendar", "sessions", "raceResults", "sprintResults"} {
-		var records []map[string]json.RawMessage
-		if json.Unmarshal(d[key], &records) != nil {
-			return fmt.Errorf("invalid records in %s", key)
-		}
-		for _, record := range records {
-			if record == nil {
-				return fmt.Errorf("null record in %s", key)
-			}
-			switch key {
-			case "drivers", "constructors":
-				var id, name string
-				var points float64
-				var finishes []int
-				if json.Unmarshal(record["id"], &id) != nil || id == "" || json.Unmarshal(record["name"], &name) != nil || name == "" || json.Unmarshal(record["points"], &points) != nil || bytes.Equal(record["points"], []byte("null")) || json.Unmarshal(record["finishes"], &finishes) != nil || len(finishes) == 0 {
-					return fmt.Errorf("invalid standing in %s", key)
-				}
-			case "calendar", "raceResults", "sprintResults":
-				var slug string
-				if json.Unmarshal(record["slug"], &slug) != nil || slug == "" {
-					return fmt.Errorf("invalid race in %s", key)
-				}
-				if key != "calendar" {
-					var rows []map[string]json.RawMessage
-					if json.Unmarshal(record["classification"], &rows) != nil || len(rows) == 0 {
-						return errors.New("invalid classification")
-					}
-				}
-			case "sessions":
-				var kind, start string
-				if json.Unmarshal(record["type"], &kind) != nil || (kind != "race" && kind != "sprint") || json.Unmarshal(record["start"], &start) != nil {
-					return errors.New("invalid session")
-				}
-				if _, err := time.Parse(time.RFC3339Nano, start); err != nil {
-					return errors.New("invalid session timestamp")
-				}
-			}
-		}
+	if err := validateNested(d); err != nil {
+		return err
 	}
 	for _, key := range []string{"countbackAvailable", "constructorCountbackAvailable"} {
 		var b bool

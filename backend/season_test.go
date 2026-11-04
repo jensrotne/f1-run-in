@@ -201,6 +201,7 @@ func TestPostgresIntegration(t *testing.T) {
 	if d["source"] != "cached" {
 		t.Fatal("no cached fallback")
 	}
+	assertMalformedRefreshPreservesSnapshot(t, db, year)
 	// A real PostgreSQL trigger rejects writes, exercising atomic failure fallback.
 	_, e = db.pool.Exec(ctx, `CREATE OR REPLACE FUNCTION reject_season_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test write failure'; END $$; CREATE TRIGGER reject_write BEFORE INSERT OR UPDATE ON seasons FOR EACH ROW EXECUTE FUNCTION reject_season_write()`)
 	if e != nil {
@@ -239,5 +240,75 @@ func TestValidationRejectsMalformedFields(t *testing.T) {
 	b, _ := json.Marshal(d)
 	if validate(b, year) == nil {
 		t.Fatal("accepted malformed driver")
+	}
+}
+
+func malformedNestedFixtures(t *testing.T, year int) map[string][]byte {
+	t.Helper()
+	cases := map[string]func(map[string]any){
+		"invalid warning":           func(d map[string]any) { d["warning"] = map[string]any{"unexpected": true} },
+		"calendar missing sessions": func(d map[string]any) { delete(d["calendar"].([]any)[0].(map[string]any), "sessions") },
+		"calendar null sessions":    func(d map[string]any) { d["calendar"].([]any)[0].(map[string]any)["sessions"] = nil },
+		"calendar malformed session": func(d map[string]any) {
+			d["calendar"].([]any)[0].(map[string]any)["sessions"].([]any)[0].(map[string]any)["completed"] = "yes"
+		},
+		"calendar invalid date": func(d map[string]any) { d["calendar"].([]any)[0].(map[string]any)["date"] = "not-a-date" },
+		"classification null row": func(d map[string]any) {
+			d["raceResults"].([]any)[0].(map[string]any)["classification"].([]any)[0] = nil
+		},
+		"classification missing team": func(d map[string]any) {
+			delete(d["raceResults"].([]any)[0].(map[string]any)["classification"].([]any)[0].(map[string]any), "team")
+		},
+		"classification wrong points": func(d map[string]any) {
+			d["sprintResults"].([]any)[0].(map[string]any)["classification"].([]any)[0].(map[string]any)["points"] = "eight"
+		},
+		"standing missing code":          func(d map[string]any) { delete(d["constructors"].([]any)[0].(map[string]any), "code") },
+		"projected session missing name": func(d map[string]any) { delete(d["sessions"].([]any)[0].(map[string]any), "name") },
+	}
+	result := map[string][]byte{}
+	for name, mutate := range cases {
+		var d map[string]any
+		_ = json.Unmarshal(fixture(t, year, time.Now()), &d)
+		mutate(d)
+		result[name], _ = json.Marshal(d)
+	}
+	return result
+}
+func assertMalformedRefreshPreservesSnapshot(t *testing.T, db store, year int) {
+	t.Helper()
+	before, e := db.Load(context.Background(), year)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var old map[string]any
+	_ = json.Unmarshal(before, &old)
+	for name, raw := range malformedNestedFixtures(t, year) {
+		t.Run(name, func(t *testing.T) {
+			if e := validate(raw, year); e == nil {
+				t.Fatal("malformed nested payload passed validation")
+			}
+			s := &service{db: db, ctx: context.Background(), ingest: func(context.Context, int) ([]byte, error) { return raw, nil }}
+			body, e := s.Get(context.Background(), year)
+			if e != nil {
+				t.Fatal(e)
+			}
+			var response map[string]any
+			_ = json.Unmarshal(body, &response)
+			if response["source"] != "cached" || response["warning"] != warning || response["fetchedAt"] != old["fetchedAt"] {
+				t.Fatal("malformed refresh lost cached provenance/timestamp")
+			}
+			after, e := db.Load(context.Background(), year)
+			if e != nil || string(after) != string(before) {
+				t.Fatal("malformed refresh replaced stored snapshot")
+			}
+		})
+	}
+}
+func TestMalformedNestedRefreshFallback(t *testing.T) {
+	year := time.Now().UTC().Year()
+	db := &memoryStore{raw: fixture(t, year, time.Now().Add(-time.Hour))}
+	assertMalformedRefreshPreservesSnapshot(t, db, year)
+	if db.saves != 0 {
+		t.Fatal("malformed refresh attempted persistence")
 	}
 }
